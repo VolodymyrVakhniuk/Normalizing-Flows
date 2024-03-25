@@ -75,12 +75,19 @@ class Flow2D(nn.Module):
         # Forward pass
         (x1, x2), (z1, z2) = self(x)
 
-        # Jacobian
+        # Recall: NLL = 
+        # = -log p(x1, x2) =                                                (by change of variables)
+        # = -log (p(z1, z2) * |det(Jacobian)|) =                            (prob chain rule + compute det(Jacobian))
+        # = -log (p(z1) * p(z2 | z1) * |df2_dx2| * |df1_dx1|) =             (log of prod = sum of logs)
+        # = -log p(z1) - log p(z2 | z1) - log |df2_dx2| - log |df1_dx1| =   (p(z1) and p(z2 | z1) = const since both are uniform distributions)
+        # = -log |df2_dx2| - log |df1_dx1| + C <=>                          (from optimization perspective)
+        # = -log |df2_dx2| - log |df1_dx1|
+
+        # Derivatives
         df1_dx1 = torch.autograd.grad(outputs=z1, inputs=x1, grad_outputs=torch.ones_like(z1), retain_graph=True, create_graph=True)[0]
         df2_dx2 = torch.autograd.grad(outputs=z2, inputs=x2, grad_outputs=torch.ones_like(z2), retain_graph=True, create_graph=True)[0]
 
-        # Assume that distribution over z is uniform [0,1] =>
-        # p(z) = const => does not matter from optimization perspective!
+        # Losses
         loss_uniform = 0.0
         loss_jacobian = -(torch.log(torch.abs(df1_dx1) + 1e-9) + torch.log(torch.abs(df2_dx2) + 1e-9)).mean()
 
@@ -165,9 +172,6 @@ class Flow2D(nn.Module):
         return x_sample
 
 
-
-        
-
 # TODO: 
 # 1) check the dimensions of z1, z2, etc: z1: 64x1
 # 2) make sure broadcasting in eval_logistic_cdf works for conditional flow case (means_f2, ... are now batches!!!)
@@ -175,7 +179,6 @@ class Flow2D(nn.Module):
 # 4) implement sample from latent (flow inversion)
 # 5) train on swiss roll dataset and visualize the learned density (plot todo) using 4)
     
-
 
 if __name__ == "__main__":
     # Device
