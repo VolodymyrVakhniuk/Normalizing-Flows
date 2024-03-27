@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
 # Prior for NICE, see section 3.4 of NICE paper for details
@@ -40,6 +41,8 @@ class AdditiveCouplingLayer(nn.Module):
     def forward(self, x):
         # Extracting corresponing half of the input elements
         x_I1, x_I2 = self._split(x)
+
+        # print(x_I1.size())
 
         # Applying the additive flow transformation
         y_I1 = x_I1
@@ -112,6 +115,7 @@ class NICE(nn.Module):
         self.log_scale = nn.Parameter(torch.zeros(input_dim, requires_grad=True))
 
 
+    # Assumes x is flat
     def forward(self, x):
         z = x
         for coupling_layer in self.flow:
@@ -124,8 +128,12 @@ class NICE(nn.Module):
 
     def get_loss(self, x):
         # See NICE paper section 3.3 for details
+        batch_size = x.size(0)
+        x = x.view(batch_size, -1)
+
         z = self(x)
-        loss = self.prior.log_prob(z).sum(dim=1) + torch.sum(torch.abs(self.log_scale))
+        loss = -(self.prior.log_prob(z).sum(dim=1) + torch.sum(self.log_scale)).mean()
+
         return loss
     
 
@@ -133,7 +141,8 @@ class NICE(nn.Module):
     def sample_from_latent(self, z):
         self.eval()
 
-        x = z
+        # Inverse of forward
+        x = z / torch.exp(self.log_scale)
         for coupling_layer in reversed(self.flow):
             x = coupling_layer.inverse(x)
         
@@ -149,11 +158,234 @@ class NICE(nn.Module):
         x = self.sample_from_latent(z)
 
         self.train()
-        return x
+        return x.view(-1, 1, 28, 28)
+
+
+
+if __name__ == "__main__":
+    # Device
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    print(device)
+
+    # Creating fake data
+    image_batch = torch.randn(10, 1, 28, 28, device=device)
+
+    # Creating the model
+    prior = StandardLogistic()
+    model = NICE(num_coupling_layers=5, input_dim=28*28, hidden_dim=256, num_m_layers=3, prior=StandardLogistic()).to(device)
+
+
+    z = model(image_batch.view(image_batch.size(0), -1))
+    image_batch_inv = model.sample_from_latent(z)
+
+    with np.printoptions(formatter={'float': '{:0.5f}'.format}):
+        print(image_batch[0, :, 0].cpu().detach().numpy())
+        print(image_batch_inv.view(-1, 1, 28, 28)[0, :, 0].cpu().detach().numpy())
+    # Sanity checks
+    # print(model.get_loss(image_batch))
+    # print(model.sample(num_samples=10).size())
+    # print(model.sample(num_samples=10))
+
+
+
+
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+
+
+# # DO NOT CHANGE THIS CELL
+# class StandardLogistic(torch.distributions.Distribution):
+#     """Standard logistic distribution.
+#     """
+#     def __init__(self):
+#         super(StandardLogistic, self).__init__(validate_args=False)
+
+#     def log_prob(self, x):
+#         """Computes data log-likelihood.
+#         Args:
+#             x: input tensor.
+#         Returns:
+#             log-likelihood.
+#         """
+#         return -(F.softplus(x) + F.softplus(-x))
+
+#     def sample(self, size):
+#         """Samples from the distribution.
+#         Args:
+#             size: number of samples to generate.
+#         Returns:
+#             samples.
+#         """
+#         z = torch.distributions.Uniform(0., 1.).sample(size)
+#         return torch.log(z) - torch.log(1. - z)
+
+# class AdditiveCouplingLayer(nn.Module): 
+#     def __init__(self, input_dim, hidden_dim, num_layers, partition):
+#         super().__init__()
+#         assert partition in ['odd', 'even']
+#         self.partition = partition
+#         _get_even = lambda xs: xs[:, 0::2]
+#         _get_odd = lambda xs: xs[:, 1::2]
+#         if (partition == 'even'):
+#             self._first = _get_even
+#             self._second = _get_odd
+#         else:
+#             self._first = _get_odd
+#             self._second = _get_even
+        
+#         _modules = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
+#         for _ in range(num_layers):
+#             _modules.append(nn.Linear(hidden_dim, hidden_dim) )
+#             _modules.append(nn.ReLU())
+#         _modules.append(nn.Linear(hidden_dim, input_dim) )
+#         self.net = nn.Sequential(*_modules)
+
+    
+#     def forward(self, x):
+#         """Map an input through the partition and nonlinearity.
+#         y1 = x1
+#         y2 = x2 + m(x1)
+#         """
+#         # YOUR CODE HERE
+#         x_first = self._first(x)
+#         x_second = self._second(x)
+#         # print(x_first.size())
+#         m_x_first = self.net(x_first)
+
+#         y_first = x_first
+#         y_second = x_second + m_x_first
+
+#         out = torch.zeros_like(x)
+#         if self.partition == "even":
+#           out[:, 0::2] = y_first
+#           out[:, 1::2] = y_second
+#         elif self.partition == "odd":
+#           out[:, 1::2] = y_first
+#           out[:, 0::2] = y_second
+
+#         return out
+
+#     def inverse(self, y):
+#         """Inverse mapping through the layer. Gradients should be turned off for this pass.
+#         x1 = y1
+#         x2 = y2 - m(y1)
+#         """
+#         # YOUR CODE HERE
+#         y_first = self._first(y)
+#         y_second = self._second(y)
+#         m_y_first = self.net(y_first)
+
+#         x_first = y_first
+#         x_second = y_second - m_y_first
+
+#         out = torch.zeros_like(y)
+#         if self.partition == "even":
+#           out[:, 0::2] = x_first
+#           out[:, 1::2] = x_second
+#         elif self.partition == "odd":
+#           out[:, 1::2] = x_first
+#           out[:, 0::2] = x_second
+
+#         return out
+
+
+
+# class NICE(nn.Module):
+#     def __init__(self, num_coupling_layers, input_dim, hidden_dim, num_m_layers, prior):
+#         super(NICE, self).__init__()
+#         assert (input_dim % 2 == 0)
+#         self.input_dim = input_dim
+#         self.hidden_dim = hidden_dim
+#         print("DSNKNAIDSN")
+#         # define network
+#         # YOUR CODE HERE
+
+#         # Note: self.hidden_dim and num_m_layers refers to the neural network embedded in the coupling layer;
+#         # The input and output of the coupling layer have the same dimensionality! namely - input_dim;
+#         self.coupling_1 = AdditiveCouplingLayer(int(self.input_dim / 2), self.hidden_dim, num_m_layers, partition="odd")
+#         self.coupling_2 = AdditiveCouplingLayer(int(self.input_dim / 2), self.hidden_dim, num_m_layers, partition="even")
+#         self.coupling_3 = AdditiveCouplingLayer(int(self.input_dim / 2), self.hidden_dim, num_m_layers, partition="odd")
+#         self.coupling_4 = AdditiveCouplingLayer(int(self.input_dim / 2), self.hidden_dim, num_m_layers, partition="even")
+
+#         # Initialized to 0 because it will be exponentiated
+#         self.s = nn.Parameter(torch.zeros(input_dim, requires_grad=True))
+
+#         # self.scale = nn.Parameter(
+#         #     torch.zeros((1, dim)), requires_grad=True)
+
+#         self.prior = prior
+#         self.register_buffer('_dummy', torch.empty([0, ]))
+
+
+#     def forward(self, x):
+#         """Forward pass through all invertible coupling layers.
+#         Args:
+#             x: Input data. float tensor of shape (batch_size, input_dim).
+#         Returns:
+#             z: Latent variable. float tensor of shape (batch_size, input_dim).
+#         """
+#         # YOUR CODE HERE
+#         z_1 = self.coupling_1(x)
+#         z_2 = self.coupling_2(z_1)
+#         z_3 = self.coupling_3(z_2)
+#         z_4 = self.coupling_4(z_3)
+    
+#         # Performing diagonal scaling;
+#         # In order to save memory, we don't create diagonal matrix S directly;
+#         # Instead, we "model" the multiplication by diagonal matrix by elementwise product with a vector s.
+#         # Note: Evokes torch broadcasting to multiply every example in a batch by s!
+#         z = torch.exp(self.s) * z_4
+#         return z
+
+
+#     def inverse(self, z):
+#         """Invert a set of draws from logistic prior
+#         Args:
+#             z: Latent variable. float tensor of shape (batch_size, input_dim).
+#         Returns:
+#             x: Generated data. float tensor of shape (batch_size, input_dim).
+#         """
+#         with torch.no_grad():
+#             # YOUR CODE HERE
+#             z_4 = z / torch.exp(self.s)
+            
+#             z_3 = self.coupling_4.inverse(z_4)
+#             z_2 = self.coupling_3.inverse(z_3)
+#             z_1 = self.coupling_2.inverse(z_2)
+#             x =   self.coupling_1.inverse(z_1)
+
+#         return x
     
 
+#     def log_prob(self, x):
+#         """Computes data log-likelihood. (See Section 3.3 in the NICE paper.)
+#         Args:
+#             x: input minibatch.
+#         Returns:
+#             log_p: log-likelihood of input.
+#         """
+#         # YOUR CODE HERE
+#         z = self.forward(x)
+#         log_p = self.prior.log_prob(z).sum(dim=1) + torch.sum(self.s)
+      
+#         return log_p
+    
 
+#     def get_loss(self, x):
+#         return -self.log_prob(x.view(x.size(0), -1)).mean()
 
-
+    
+#     def sample(self, num_samples):
+#         """Generates samples.
+#         Args:
+#             num_samples: number of samples to generate.
+#         Returns:
+#             x: samples from the data space X.
+#         """
+#         z = self.prior.sample((num_samples, self.input_dim)).to(self._dummy.device)
+#         # YOUR CODE HERE
+#         x = self.inverse(z)
+#         return x
 
 
